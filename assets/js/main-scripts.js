@@ -287,7 +287,7 @@
     MIRO.Typed = function() {
         if ($("#type")[0]) {
             var element = new Typed("#type", {
-                strings: ["Web Developer", "Graphic Designer", "Digital Product Designer"],
+                strings: ["Data Scientist", "X-HEC Student", "Curious & Creative mind!"],
                 typeSpeed: 100,
                 backSpeed: 20,
                 loop: true
