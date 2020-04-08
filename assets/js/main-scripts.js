@@ -70,7 +70,7 @@
             anchors: ["home", "about", "resume", "services", "portfolio", "testimonials", "blog", "contact"],
             scrollingSpeed: 700,
             easing: "swing",
-            loopBottom: true,
+            loopBottom: false,
             loopTop: false,
             css3: true,
             navigation: {
