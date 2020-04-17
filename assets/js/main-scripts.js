@@ -93,7 +93,7 @@
         var slider = $(".carousel-blog-1");
         slider.owlCarousel({
             nav: true,
-            loop: true,
+            loop: false,
             dots: true,
             items: 3,
             margin: 30,
