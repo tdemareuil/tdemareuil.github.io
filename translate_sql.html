@@ -6,12 +6,12 @@
   <body>
     <h1>SQL queries translator</h1>
     <p>
-      Below, you can translate SQL queries from Hive ↔︎ Presto ↔︎ Vertica.<br><br>Just enter your query, select your source and destination SQL flavor, and click the "Translate" button.
+      Below, you can translate SQL queries between Hive ↔︎ Presto ↔︎ Vertica.<br><br>Just enter your query, select your source and destination SQL flavor, and click the "Translate" button.
     </p>
 
     <br>
     
-    <textarea id="input" rows='10' value="Please enter your query here" style="width: 60%;"></textarea>
+    <textarea id="input" rows='11' value="Please enter your query here" style="width: 60%;"></textarea>
     
     <br><br>
 
@@ -45,7 +45,7 @@
     <br><br><br>
 
     <div>Output:</div>
-    <textarea id="output" style="width: 60%;" rows="10" disabled></textarea>
+    <textarea id="output" style="width: 60%;" rows="12" disabled></textarea>
 
     <script>
       const output = document.getElementById("output");
@@ -330,7 +330,7 @@
                     
                     # if needed, just signal that presto interval returns a date, not a timestamp
                     if 'interval' in q:
-                        warnings.append("Warning: Note that in Presto, the INTERVAL operation returns a date, while in Hive and Vertica it returns a full timestamp (shouldn't be an issue).")
+                        warnings.append("Warning: Note that in Presto, INTERVAL returns a date, while in Hive and Vertica it returns a full timestamp (shouldn't be an issue).")
                     
                     # Then, presto specific & vertica specific
                     if dest == 'vertica':
@@ -810,5 +810,11 @@
         }
       }
     </script>
+
+    <footer>
+      <br>
+      <p>Thomas de Mareuil | PAX | 2023</p>
+    </footer>
+
   </body>
 </html>
