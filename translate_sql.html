@@ -73,6 +73,7 @@
             
             import re
             import regex
+            import copy
 
             def translate_sql(q, src='presto', dest='hive', verbose=True):
                 """
@@ -572,7 +573,7 @@
                         # Then, get the group by and order by expressions. We use the same trick as before
                         # to split them, except that we keep the spaces and newlines.
                         groupby_original = regex.findall(r'(?<=group by)([\\S\\s]+?)(?=order\\s+by|having|select|union|limit|$|\\s+,\\s+\\w+\\s+as)', q)
-                        groupby_split = deepcopy(groupby_original)
+                        groupby_split = copy.deepcopy(groupby_original)
                         functions = [[''.join(f) for f in regex.findall(r'(\\w+\\s*)([\\(\\[](?>[^()]++|(?2))*[\\)\\]])+\\s*', c)] for c in groupby_split]
                         for i in range(len(groupby_split)):
                             for f in functions[i]:
@@ -581,7 +582,7 @@
                         groupby_split = [[re.sub(r';', r',', col) for col in cols] for cols in groupby_split]
 
                         orderby_original = regex.findall(r'(?<=order by)([\\S\\s]+?)(?=select|union|limit|$|\\s+,\\s+\\w+\\s+as)', q)
-                        orderby_split = deepcopy(orderby_original)
+                        orderby_split = copy.deepcopy(orderby_original)
                         functions = [[''.join(f) for f in regex.findall(r'(\\w+\\s*)([\\(\\[](?>[^()]++|(?2))*[\\)\\]])+\\s*', c)] for c in orderby_split]
                         for i in range(len(orderby_split)):
                             for f in functions[i]:
@@ -634,7 +635,7 @@
                         replacements.append(['replace column positions in order by with column expressions', orderby_subcounter])
                     except:
                         # It doesn't work very well for nested queries -> in these cases, change session parameters
-                        session_parameters = '\\nSET hive.groupby.orderby.position.alias=true;\\n'
+                        session_parameters = '\\nSET hive.groupby.orderby.position.alias=true;\\n\\n'
                         replacements.append(['change hive session parameters to use column positions', 1])
                         
                     # unnest -> lateral view with re-aliasing
@@ -791,8 +792,14 @@
                     warnings = list(set(warnings))
                     # print warnings
                     results = '\\n'.join(warnings)
+                    if len(warnings) > 0:
+                        results += '\\n\\n'
                     # print replacements in a nice format
-                    results += f'\\n\\n{sum([r[1] for r in replacements])} replacements in total:\\n'
+                    if len(replacements) > 1:
+                        w = 'replacements'
+                    else:
+                        w = 'replacement'
+                    results += f'{sum([r[1] for r in replacements])} {w} in total:\\n'
                     replacements = '\\n'.join([f'  • {r[0]}:  {r[1]}' for r in replacements])
                     results += replacements
                 else:
