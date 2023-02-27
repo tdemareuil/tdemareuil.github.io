@@ -45,7 +45,7 @@
     <br><br><br>
 
     <div>Output:</div>
-    <textarea id="output" style="width: 60%;" rows="12" disabled></textarea>
+    <textarea id="output" style="width: 60%;" rows="11" disabled></textarea>
 
     <script>
       const output = document.getElementById("output");
@@ -815,8 +815,37 @@
         } catch (err) {
           addToOutput(err);
         }
+        
+      // Reset text of the copy button
+      var btn = document.getElementById("copy");
+      btn.innerHTML = 'Copy output';
       }
     </script>
+
+    <br><br>
+
+    <button id='copy' onclick="myFunction()">Copy output</button>
+
+    <script> 
+      function myFunction() {
+
+      // Get the text field
+      var copyText = document.getElementById("output");
+
+      // Select the text field
+      copyText.select();
+      copyText.setSelectionRange(0, 99999); // For mobile devices
+
+       // Copy the text starting after SELECT or SET
+      navigator.clipboard.writeText(copyText.value.match(/(SELECT|SET)[\s\S]*$/g));
+
+      // Replace text of the button
+      var btn = document.getElementById("copy");
+      btn.innerHTML = 'Copied!';
+      }
+    </script>
+
+    <br>
 
     <footer>
       <br>
