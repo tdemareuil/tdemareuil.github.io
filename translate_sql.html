@@ -30,16 +30,6 @@
       <div class="column" style="flex: 20%;"><div>Select destination:</div><input id="dest" list="sql"></div>
       <div class="column" style="flex: 60%;"></div>
     </div>
-
-    <!--
-    <div>Select source:</div><input id="src" list="sql">
-
-    <br>
-
-    <div>Select destination:</div><input id="dest" list="sql">
-
-    <br>
-    -->
     
     <datalist id="sql">
       <option value="Hive">
@@ -93,9 +83,10 @@
                 
                 # Remove inline comments (comments which are always associated with a newline
                 # character), but keep them in memory in order to add them back at the end
-                newlines_and_comments = [c[0] for c in re.findall('((--.+)*\\n)', q)] # store
+                newlines_and_comments = [c[0] for c in re.findall('((--.+)*?(?:\\n|$))', q)] # store
+                newlines_and_comments = [n for n in newlines_and_comments if len(n) > 0]
                 newlines = [c[0] for c in re.findall('\\n', q)] # store
-                q = re.sub('--.+?(?=\\n)', '', q) # remove (but keep newline characters)
+                q = re.sub('--.+?(?=\\n|$)', '', q) # remove (but keep newline characters)
                 
                 # Lower text and initialize replacements counter
                 q = q.lower()
@@ -108,8 +99,6 @@
                     warnings.append("Warning: Translation doesn't support all concatenation operations yet (||, CONCAT_WS, ARRAY_JOIN).")
                 if len(re.findall(r'\\b(map|transform|map_from_entries)\\b', q)) > 0:
                     warnings.append("Warning: Translation doesn't support all Presto mapping functions yet (MAP, TRANSFORM, etc.).")
-                if len(re.findall(r'\\bnamed_struct\\b', q)) > 0:
-                    warnings.append("Warning: Hive's NAMED_STRUCT doesn't have an equivalent in Presto and Vertica.")
                 
                 # 1. From specific languages
                 
@@ -117,23 +106,53 @@
                     
                     # First, hive specific & presto / vertica common
                     
-                    # lateral view -> unnest, with realiasing if needed (if we unnest an array vs. a struct)
-                    r = r'lateral\\s+view\\s+explode\\s*(\\([\\S\\s]+?\\))\\s+(\\w+)\\s+as\\s+(\\w+)'
-                    search = re.findall(r, q)
-                    col_aliases = [s[2] for s in search]
+                    # lateral view outer explode -> left join unnest
+                    # before translation, I remove outer
+                    newlines_and_outerexplode = re.findall(r'\\n|lateral\\s+view\\s+outer\\s+explode.*(?:\\n|$)', q)
+                    nb_outer = sum([len(x) > 2 for x in newlines_and_outerexplode])
+                    q = re.sub(r'lateral\\s+view\\s+outer\\s+explode', r'lateral view explode', q)        
+                    
+                    # unnest an array of struct or an array, hive -> presto
+                    # with realiasing only in the case of an array
+                    r = r'lateral\\s+view\\s+explode\\s*(\\(([\\s\\S]*?|\\w*\\s*(\\((?>[^()]++|(?2))*\\)))\\))\\s*(\\w+)\\s+as\\s+(\\w+)'
+                    search = regex.findall(r, q)
+                    col_aliases = [s[4] for s in search]
                     search = [re.findall(r'{}\\.'.format(a), q) for a in col_aliases]
                     counter = 0
                     counter_realiasing = 0
                     for s in search:
                         if len(s) > 0:
-                            q = re.sub(r, r'cross join unnest\\1 as \\3', q, count=1)
+                            q = regex.sub(r, r'cross join unnest\\1 as \\5', q, count=1)
                             counter += 1
                         else:
-                            q = re.sub(r, r'cross join unnest\\1 as \\2 (\\3)', q, count=1)
+                            q = regex.sub(r, r'cross join unnest\\1 as \\4 (\\5)', q, count=1)
                             counter_realiasing += 1
-                    replacements.append(['lateral view explode -> cross join unnest', counter])
-                    replacements.append(['lateral view explode -> cross join unnest with realiasing', counter_realiasing])
+                    replacements.append(['lateral view explode -> cross join unnest, for an array or array of struct, without realiasing', counter])
+                    replacements.append(['lateral view explode -> cross join unnest, for an array, with realiasing', counter_realiasing])
+
+                    # unnest a map, hive -> presto, with or without realiasing
+                    r = r'lateral\\s+view\\s+explode\\s*(\\(([\\s\\S]*?|\\w*\\s*(\\((?>[^()]++|(?2))*\\)))\\))\\s*(\\w+)\\s+as\\s+?(\\s*\\w+\\s*,\\s*\\w+)'
+                    counter = len(regex.findall(r, q))
+                    q = regex.sub(r, r'cross join unnest\\1 as \\4 (\\5)', q)
+                    r = r'lateral\\s+view\\s+explode\\s*(\\(([\\s\\S]*?|\\w*\\s*(\\((?>[^()]++|(?2))*\\)))\\))\\s*(\\w+)'
+                    counter += len(regex.findall(r, q))
+                    replacements.append(['lateral view explode -> cross join unnest, for a map', counter])
+                    q = regex.sub(r, r'cross join unnest\\1 as \\4 (key, value)', q) # needs to come very last
                     
+                    # lateral view outer explode -> left join unnest
+                    # after translation, I replace with left
+                    for i in range(len(newlines)):
+                        where = [m.start() for m in re.finditer(newlines[i], q)][i]
+                        before = q[:where]
+                        after = q[where:]
+                        try:
+                            if len(newlines_and_outerexplode[i+1]) > 2:
+                                after = re.sub(r'cross join unnest', r'left join unnest', after, count=1)
+                        except:
+                            continue
+                        q = before + after
+                    replacements.append(['lateral view OUTER explode -> LEFT join unnest', nb_outer])
+
                     # pmod -> mod
                     r = r'\\bpmod\\s*\\('
                     replacements.append(['pmod -> mod', len(re.findall(r, q))])
@@ -189,6 +208,22 @@
                     for s in search_corrected:
                         q = q.replace(s[0], s[1])
                     
+                    # named_struct -> row, only possible without realiasing the row (as we can't know the data types)
+                    search = regex.findall(r"(named_struct\\s*(\\(((?>[^()]++|(?2))*?)\\)))", q)
+                    if len(search) > 0:
+                        nb_newlines = [len(re.findall(r'\\n', s[0])) for s in search]
+                    # we use the ; trick in case there are functions inside the named_struct, i.e. replace with ; if surrounded by ()
+                    search_corrected = [re.sub(r'\\(([\\s\\S]*?),([\\s\\S]*?)\\)', r'(\\1;\\2)', s[2]) for s in search]
+                    names = [s.split(',')[::-2][::-1] for s in search_corrected]
+                    names = [[n.replace(';', ',').strip() for n in na] for na in names]
+                    trad = ['row(' + ', '.join(n) + ')' for n in names]
+                    trad = [t + '\\n'*nb_newlines[i] for i, t in enumerate(trad)]
+                    for s, t in zip(search, trad):
+                        q = q.replace(s[0], t)
+                    replacements.append(['named_struct() -> row(), without realiasing', len(search)])
+                    if len(search) > 0:
+                        warnings.append('Warning: When translating from Hive to Presto / Vertica, you cannot use aliases different than the column name for keys in the NAMED_STRUCT.')
+
                     # Then, hive specific & presto specific
                     if dest == 'presto':            
                         
@@ -581,7 +616,9 @@
 
                         # Then, get the group by and order by expressions. We use the same trick as before
                         # to split them, except that we keep the spaces and newlines.
-                        groupby_original = regex.findall(r'(?<=group by)([\\S\\s]+?)(?=order\\s+by|having|select|union|limit|$|\\s+,\\s+\\w+\\s+as)', q)
+                        groupby_original = regex.findall(r'(?<=group by)([\\S\\s]+?)(?=order\\s+by|having|select|union|limit|$|\\)\\s*\\w+|\\s+,\\s+\\w+\\s+as)', q)
+                        if len(groupby_original) > 0:
+                            groupby_original = [groupby_original[0]]
                         groupby_split = copy.deepcopy(groupby_original)
                         functions = [[''.join(f) for f in regex.findall(r'(\\w+\\s*)([\\(\\[](?>[^()]++|(?2))*[\\)\\]])+\\s*', c)] for c in groupby_split]
                         for i in range(len(groupby_split)):
@@ -590,7 +627,9 @@
                         groupby_split = [cols.split(',') for cols in groupby_split]
                         groupby_split = [[re.sub(r';', r',', col) for col in cols] for cols in groupby_split]
 
-                        orderby_original = regex.findall(r'(?<=order by)([\\S\\s]+?)(?=select|union|limit|$|\\s+,\\s+\\w+\\s+as)', q)
+                        orderby_original = regex.findall(r'(?<=order by)([\\S\\s]+?)(?=select|union|limit|$|\\)\\s*\\w+|\\s+,\\s+\\w+\\s+as)', q)
+                        if len(orderby_original) > 0:
+                            orderby_original = [orderby_original[0]]
                         orderby_split = copy.deepcopy(orderby_original)
                         functions = [[''.join(f) for f in regex.findall(r'(\\w+\\s*)([\\(\\[](?>[^()]++|(?2))*[\\)\\]])+\\s*', c)] for c in orderby_split]
                         for i in range(len(orderby_split)):
@@ -642,20 +681,71 @@
                             q = q.replace(orderby_original[i], orderby_modified[i], 1)
                         replacements.append(['replace column positions in group by with column expressions', groupby_subcounter])
                         replacements.append(['replace column positions in order by with column expressions', orderby_subcounter])
-                    except:
-                        # It doesn't work very well for nested queries -> in these cases, change session parameters
-                        session_parameters = '\\nSET hive.groupby.orderby.position.alias=true;\\n\\n'
-                        replacements.append(['change hive session parameters to use column positions', 1])
                         
-                    # unnest -> lateral view with re-aliasing
-                    r = r'cross\\s+join\\s+unnest\\s*(\\([\\S\\s]+\\))\\s+as\\s+(\\w+)\\s+\\((\\w+)\\)'
-                    if len(re.findall(r, q)) > 0:
-                        warnings.append("Warning: You cannot re-alias column names in Hive's LATERAL VIEW. Translation to Hive is only available for expressions such as CROSS JOIN UNNEST (original_column) AS new_column.")
+                        # It doesn't work for nested queries (for now) -> in these cases, change session parameters
+                        if len(re.findall(r'from\\s*\\(', q)) > 0:
+                            session_parameters = '\\nSET hive.groupby.orderby.position.alias=true;\\n'
+                            replacements.append(['change hive session parameters to use column positions', 1])
+                    except:
+                        # If error, change session parameters
+                        session_parameters = '\\nSET hive.groupby.orderby.position.alias=true;\\n'
+                        replacements.append(['change hive session parameters to use column positions', 1])
                     
-                    # unnest -> lateral view
-                    r = r'cross\\s+join\\s+unnest\\s*(\\([\\S\\s]+\\))\\s+as\\s+(\\w+)'
-                    replacements.append(['cross join unnest -> lateral view explode', len(re.findall(r, q))])
-                    q = re.sub(r, r'lateral view explode\\1 t as \\2', q)
+                    # left join unnest -> lateral view outer explode
+                    # before translation, I replace with cross
+                    newlines_and_leftjoinunnest = re.findall(r'\\n|left\\s+join\\s+unnest.*(?:\\n|$)', q)
+                    nb_left = sum([len(x) > 2 for x in newlines_and_leftjoinunnest])
+                    q = re.sub(r'left\\s+join\\s+unnest', r'cross join unnest', q)
+                    
+                    # unnest an array, presto -> hive, with realiasing
+                    r = r'cross\\s+join\\s+unnest\\s*(\\(([\\s\\S]*?|\\w*\\s*(\\((?>[^()]++|(?2))*\\)))\\))\\s*(as)*\\s+(\\w+)\\s*\\((\\w+)\\)'
+                    replacements.append(['cross join unnest -> lateral view explode, for an array, with realiasing', len(regex.findall(r,q))])
+                    q = regex.sub(r, r'lateral view explode\\1 \\5 as \\6', q)
+                    # unnest an array of struct, presto -> hive, with realiasing
+                    # realiasing an array of struct is not possible in Hive -> if there are several elements in the presto realiasing, display a warning
+                    r = r'cross\\s+join\\s+unnest\\s*(\\(([\\s\\S]*?|\\w*\\s*(\\((?>[^()]++|(?2))*\\)))\\))\\s*(as)*\\s+(\\w+)\\s*\\((\\s*.*\\s*,\\s*.*\\s*)\\)' #2 or more realiased elements
+                    if len(regex.findall(r, q)) > 0:
+                        warnings.append("Warning: If you unnest an array of struct, you cannot re-alias the key names of the struct in Hive's LATERAL VIEW.")
+
+                    # unnest an array of struct or an array, presto -> hive, without realiasing
+                    r = r'cross\\s+join\\s+unnest\\s*(\\(([\\s\\S]*?|\\w*\\s*(\\((?>[^()]++|(?2))*\\)))\\))\\s*(as)*\\s+(\\w+)'
+                    search = regex.findall(r, q)
+                    replacements.append(['cross join unnest -> lateral view explode, for an array or array of struct, without realiasing', len(search)])
+                    q = regex.sub(r, r'lateral view explode\\1 t_ as \\5', q)
+                    # add a warning to cover the case when the map isn't correctly realiased in presto, i.e. unable to distinguish whether we're unnesting a map or an array of struct
+                    if len(search) > 0:
+                        warnings.append("Warning: Note that if you're unnesting a map (i.e. an array of pairs), you need to re-alias it in your base query with the following syntax, else it will not be correctly translated: cross join unnest (col_name) as col_alias (key, value).")
+                    # note that in the case above, new_column.* works in presto but not in hive -> we'll add a warning if we find such syntax
+                    col_aliases = [s[4] for s in search]
+                    search = [re.findall(r'{}\\s*\\.\\s*\\*'.format(a), q) for a in col_aliases]
+                    for s in search:
+                        if len(s) > 0:
+                            warnings.append("Warning: If you're unnesting an array of struct, in Hive you cannot use the star syntax to select all keys of the struct.")
+                    
+                    # unnest a map, presto -> hive, with realiasing
+                    r = r'cross\\s+join\\s+unnest\\s*(\\(([\\s\\S]*?|\\w*\\s*(\\((?>[^()]++|(?2))*\\)))\\))\\s*(as)*\\s+(\\w+)\\s*\\((\\s*\\w+\\s*,\\s*\\w+\\s*)\\)' #exactly 2 realiased elements
+                    replacements.append(['cross join unnest -> lateral view explode, for a map, with realiasing', len(regex.findall(r, q))])
+                    q = regex.sub(r, r'lateral view explode\\1 \\5 as \\6', q)
+                    # unnest a map, presto -> hive, without realiasing
+                    # actually, this case would have already been replaced by the array of struct case without realiasing
+                    # i.e. 'lateral view explode (original_column) t as new_column', so I added a warning above
+                    #r = r'cross\\s+join\\s+unnest\\s*(\\(([\\s\\S]*?|\\w*\\s*(\\((?>[^()]++|(?2))*\\)))\\))\\s*(as)*\\s+(\\w+)'
+                    #replacements.append(['cross join unnest -> lateral view explode, for a map, without realiasing', len(regex.findall(r, q))])
+                    #q = regex.sub(r, r'lateral view explode\\1 \\5', q)
+                    
+                    # left join unnest -> lateral view outer explode
+                    # after translation, I replace with outer
+                    for i in range(len(newlines)):
+                        where = [m.start() for m in re.finditer(newlines[i], q)][i]
+                        before = q[:where]
+                        after = q[where:]
+                        try:
+                            if len(newlines_and_leftjoinunnest[i+1]) > 2:
+                                after = re.sub(r'lateral view explode', r'lateral view outer explode', after, count=1)
+                        except:
+                            continue
+                        q = before + after
+                    replacements.append(['LEFT join unnest -> lateral view OUTER explode', nb_left])
 
                     # mod -> pmod
                     r = r'\\bmod\\s*\\('
@@ -732,6 +822,31 @@
                         q = q.replace(s[0], s[1])
                     q = re.sub(r'\\b(date_part|date_trunc)\\s*\\(', r'extract(', q)
                     
+                    # row with realiasing -> named_struct
+                    search = regex.findall(r'(cast\\s*\\(\\s*row\\s*(\\(((?>[^()]++|(?2))*?)\\))\\s*as\\s+row\\s*\\(((?>[^()]++|(?2))*?)\\)\\s*\\))', q)
+                    if len(search) > 0:
+                        nb_newlines = [len(re.findall(r'\\n', s[0])) for s in search]
+                    names_corrected = [re.sub(r'\\(([\\s\\S]*?),([\\s\\S]*?)\\)', r'(\\1;\\2)', s[2]).split(',') for s in search]
+                    names = [[n.replace(';', ',').strip() for n in na] for na in names_corrected]
+                    alias = [[a.strip().split(' ')[0] for a in s[3].split(',')] for s in search]
+                    trad = ['named_struct(' + ', '.join([f"'{a}', {n}" for a, n in zip(al, na)]) + ')' for al, na in zip(alias, names)]
+                    trad = [t + '\\n'*nb_newlines[i] for i, t in enumerate(trad)]
+                    for s, t in zip(search, trad):
+                        q = q.replace(s[0], t)
+                    replacements.append(['row() with realiasing -> named_struct()', len(search)])
+
+                    # row without realiasing -> named_struct
+                    search = regex.findall(r'(row\\s*(\\(((?>[^()]++|(?2))*?)\\)))', q)
+                    if len(search) > 0:
+                        nb_newlines = [len(re.findall(r'\\n', s[0])) for s in search]
+                    names_corrected = [re.sub(r'\\(([\\s\\S]*?),([\\s\\S]*?)\\)', r'(\\1;\\2)', s[2]).split(',') for s in search]
+                    names = [[n.replace(';', ',').strip() for n in na] for na in names_corrected]
+                    trad = ['named_struct(' + ', '.join([f"'{name}', {name}" for name in t]) + ')' for t in names]
+                    trad = [t + '\\n'*nb_newlines[i] for i, t in enumerate(trad)]
+                    for s, t in zip(search, trad):
+                        q = q.replace(s[0], t)
+                    replacements.append(['row() without realiasing -> named_struct()', len(search)])
+                    
                 # hive / vertica common & presto specific
                 if dest == 'presto':
                     
@@ -782,16 +897,26 @@
                 r = r'''(\\b\\w+\\s*\\(|\\b(select|from|where|group by|order by|union|all|intersect|interval|left|right|inner|join|cross|unnest|lateral|view|explode|between|in|as|or|and|with|set|having|limit|outer|like|ilike|rlike|is|not|null|partition|by|over|on|case|when|then|else|end|preceding|following|date|timestamp|varchar|double|int|integer|string|bool|boolean|bigint|smallint|tinyint|float|insert|desc|asc|distinct)\\b)'''
                 q = re.sub(r, lambda m: f"{m.group(1).upper()}", q)
                 
+                # Format a few things
+                r = r',[ ]*'
+                q = re.sub(r, r', ', q)
+                
                 # Replace back inline comments, at the correct position
                 def replace_nth(s, old, new, n):
-                    where = [m.start() for m in re.finditer(old, s)][n-1]
+                    where = [m.start() for m in re.finditer(old, s)][n]
                     before = s[:where]
                     after = s[where:]
                     after = after.replace(old, new, 1)
                     s = before + after
                     return s
                 for i in range(len(newlines)):
-                    q = replace_nth(q, newlines[i], newlines_and_comments[i], i+1)
+                    q = replace_nth(q, newlines[i], newlines_and_comments[i], i)
+                # the try-except below manages the case when the string ends with a comment
+                try:
+                    if newlines_and_comments[-1][-1] != '\\n':
+                        q += newlines_and_comments[-1]
+                except:
+                    pass
                 
                 # Build result string
                 if verbose:
