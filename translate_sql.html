@@ -305,6 +305,11 @@
                         for s in search_corrected:
                             q = q.replace(s[0], s[1])
                         q = regex.sub(r'\\btrunc\\s*\\(', r'date_format(', q)
+
+                        # percentile_approx() -> approx_percentile()
+                        r = r'\\bpercentile_approx\\s*\\('
+                        replacements.append(['percentile_approx() -> approx_percentile()', len(re.findall(r, q))])
+                        q = re.sub(r, r'approx_percentile(', q)
                         
                     # Last, hive specific & vertica specific
                     if dest == 'vertica':
@@ -363,6 +368,17 @@
                         for s in search_corrected:
                             q = q.replace(s[0], s[1])
                         q = regex.sub(r'\\b(date_sub)\\s*(\\(((?>[^()]++|(?2))*)\\))*', r'date(timestampadd\\2)', q)
+
+                        # percentile_approx() -> approximate_percentile() (hive -> vertica)
+                        r = r'\\b(percentile_approx\\s*)(\\(((?>[^()]++|(?2))*)\\))*'
+                        search = regex.findall(r, q)
+                        search_corrected = [re.sub(r'\\(([\\s\\S]*?),([\\s\\S]*?)\\)', r'(\\1;\\2)', s[2]) for s in search]
+                        expr = [s.split(',')[0].strip().replace(';', ',') for s in search_corrected]
+                        perc = [s.split(',')[1].strip() for s in search_corrected]
+                        trad = [f'approximate_percentile({e} using parameters percentile={p})' for e, p in zip(expr, perc)]
+                        for s, t in zip(search, trad):
+                            q = q.replace(s[0]+s[1], t)
+                        replacements.append(['percentile_approx() -> approximate_percentile()', len(search)])
                             
                 if src == 'presto':
                     
@@ -421,6 +437,17 @@
                         r = r'(\\bdate_add\\s*)\\s*(\\(((?>[^()]++|(?2))*)\\))*'
                         replacements.append(['date_add() -> date(timestampadd())', len(regex.findall(r, q))])
                         q = regex.sub(r, r'date(timestampadd\\2)', q)
+
+                        # approx_percentile() -> approximate_percentile()
+                        r = r'\\b(approx_percentile\\s*)(\\(((?>[^()]++|(?2))*)\\))*'
+                        search = regex.findall(r, q)
+                        search_corrected = [re.sub(r'\\(([\\s\\S]*?),([\\s\\S]*?)\\)', r'(\\1;\\2)', s[2]) for s in search]
+                        expr = [s.split(',')[0].strip().replace(';', ',') for s in search_corrected]
+                        perc = [s.split(',')[1].strip() for s in search_corrected]
+                        trad = [f'approximate_percentile({e} using parameters percentile={p})' for e, p in zip(expr, perc)]
+                        for s, t in zip(search, trad):
+                            q = q.replace(s[0]+s[1], t)
+                        replacements.append(['approx_percentile() -> approximate_percentile()', len(search)])
                         
                     # Last, presto specific & hive specific
                     if dest == 'hive':
@@ -446,6 +473,11 @@
                         r = r'\\barray_agg\\s*\\('
                         replacements.append(['array_agg() -> collect_list()', len(re.findall(r, q))])
                         q = re.sub(r, r'collect_list(', q)
+
+                        # approx_percentile() -> percentile_approx()
+                        r = r'\\bapprox_percentile\\s*\\('
+                        replacements.append(['approx_percentile() -> percentile_approx()', len(re.findall(r, q))])
+                        q = re.sub(r, r'percentile_approx(', q)
 
                 if src == 'vertica':  
                     
@@ -563,6 +595,11 @@
                         r = r'\\bdate_part\\s*\\('
                         replacements.append(['date_part() -> date_trunc()', len(re.findall(r, q))])
                         q = re.sub(r, r'date_trunc(', q)
+
+                        # approximate_percentile() -> approx_percentile()
+                        r = r'approximate_percentile\\s*\\(([\\S\\s]+?)using\\s*parameters\\s*percentile=(0\\.\\d+)'
+                        replacements.append(['approximate_percentile() -> approx_percentile()', len(re.findall(r, q))])
+                        q = re.sub(r, r'approx_percentile(\\1, \\2', q)
                         
                     # Then, vertica specific & hive specific
                     if dest == 'hive':
@@ -581,12 +618,19 @@
                         r = r'\\blistagg\\s*\\('
                         replacements.append(['listagg() -> collect_list()', len(re.findall(r, q))])
                         q = re.sub(r, r'collect_list(', q)
-                        warnings.append('Warning: note that LISTAGG returns a comma-separated list of strings, while COLLECT_LIST in Hive returns an array type.')
+                        if len(re.findall(r, q)) > 0:
+                            warnings.append('Warning: note that LISTAGG returns a comma-separated list of strings, while COLLECT_LIST in Hive returns an array type.')
                         
                         # timestamp_trunc() -> trunc()
                         r = r'\\btimestamp_trunc\\s*\\('
                         replacements.append(['timestamp_trunc() -> trunc()', len(re.findall(r, q))])
                         q = re.sub(r, r'trunc(', q)
+
+                        # approximate_percentile() -> percentile_approx()
+                        r = r'approximate_percentile\\s*\\(([\\S\\s]+?)using\\s*parameters\\s*percentile=(0\\.\\d+)'
+                        replacements.append(['approximate_percentile() -> percentile_approx()', len(re.findall(r, q))])
+                        q = re.sub(r, r'percentile_approx(\\1, \\2', q)
+
                         
                 # 2. To specific languages
                 
@@ -894,7 +938,7 @@
                 # 3. Final results
                 
                 # Put back capital letters
-                r = r'''(\\b\\w+\\s*\\(|\\b(select|from|where|group by|order by|union|all|intersect|interval|left|right|inner|join|cross|unnest|lateral|view|explode|between|in|as|or|and|with|set|having|limit|outer|like|ilike|rlike|is|not|null|partition|by|over|on|case|when|then|else|end|preceding|following|date|timestamp|varchar|double|int|integer|string|bool|boolean|bigint|smallint|tinyint|float|insert|desc|asc|distinct)\\b)'''
+                r = r'''(\\b\\w+\\s*\\(|\\b(select|from|where|group by|order by|union|all|intersect|interval|left|right|inner|join|cross|unnest|lateral|view|explode|between|in|as|or|and|with|set|having|limit|outer|like|ilike|rlike|is|not|null|partition|by|over|on|case|when|then|else|end|preceding|following|date|timestamp|varchar|double|int|integer|string|bool|boolean|bigint|smallint|tinyint|float|insert|desc|asc|distinct|using|parameters)\\b)'''
                 q = re.sub(r, lambda m: f"{m.group(1).upper()}", q)
                 
                 # Format a few things
