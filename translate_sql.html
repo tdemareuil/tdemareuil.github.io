@@ -151,7 +151,12 @@
                         except:
                             continue
                         q = before + after
-                    replacements.append(['lateral view OUTER explode -> LEFT join unnest', nb_outer])
+                    replacements.append(['lateral view outer explode -> left join unnest on true', nb_outer])
+                    # finally add 'on true', for the 3 possible outputs
+                    search = regex.findall(r'\\b(left join unnest\\s*)(\\(((?>[^()]++|(?2))*)\\))*(\\s*as\\s+\\w+(\\s*\\([\\S\\s]+?\\))*)', q)
+                    search = [s[0] + s[1] + s[3] for s in search]
+                    for s in search:
+                        q = q.replace(s, s + ' on true')
 
                     # pmod -> mod
                     r = r'\\bpmod\\s*\\('
@@ -789,7 +794,9 @@
                         except:
                             continue
                         q = before + after
-                    replacements.append(['LEFT join unnest -> lateral view OUTER explode', nb_left])
+                    replacements.append(['left join unnest on true -> lateral view outer explode', nb_left])
+                    # finally drop 'on true'
+                    q = re.sub(r'on\\s+true(\\s+)', r'\\1', q)
 
                     # mod -> pmod
                     r = r'\\bmod\\s*\\('
