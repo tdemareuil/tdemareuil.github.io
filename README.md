@@ -280,7 +280,7 @@ It also includes a SQL queries translator (Hive ↔︎ Presto ↔︎ Vertica) th
             </td>
         </tr>
         <tr>
-            <td rowspan="9" valign="top">
+            <td rowspan="11" valign="top">
                 <p><strong>Array operations</strong></p>
             </td>
             <td>
@@ -419,6 +419,38 @@ It also includes a SQL queries translator (Hive ↔︎ Presto ↔︎ Vertica) th
             </td>
             <td>
                 <p><code>ROW(col_A, col_B)</code> or <code>CAST(ROW(col_A, col_B) as ROW(A int, B int))</code>(realiasing of the struct is possible when doing Presto / Vertica -&gt; Hive)</p>
+            </td>
+            <td>
+                <p align="center">
+                    ✅
+                </p>
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <p><code>map_from_arrays(key, collect_list(value))</code> or <code>map_from_arrays(key, collect_set(value))</code></p>
+            </td>
+            <td>
+                <p><code>MAP_AGG(key, value)</code></p>
+            </td>
+            <td>
+                <p><code>MAP_AGGREGATE(key, value)</code></p>
+            </td>
+            <td>
+                <p align="center">
+                    ✅
+                </p>
+            </td>
+        </tr>
+        <tr>
+            <td>
+                <p><code>array_contains(array, x)</code></p>
+            </td>
+            <td>
+                <p><code>contains(array, x)</code></p>
+            </td>
+            <td>
+                <p><code>array_contains(array, x)</code></p>
             </td>
             <td>
                 <p align="center">
