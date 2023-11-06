@@ -434,7 +434,7 @@ It also includes a SQL queries translator (Hive ↔︎ Presto ↔︎ Vertica) th
                 <p><code>MAP_AGG(key, value)</code></p>
             </td>
             <td>
-                <p><code>MAP_AGGREGATE(key, value)</code></p>
+                <p><code>MAPAGGREGATE(key, value)</code></p>
             </td>
             <td>
                 <p align="center">
