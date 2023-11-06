@@ -179,7 +179,7 @@
                     q = re.sub(r, r'"', q)
                     
                     # array() -> array[]
-                    r = r"(array)\\s*(\\(((?>[^()]++|(?2))*)\\))"
+                    r = r"(array\\b)\\s*(\\(((?>[^()]++|(?2))*)\\))"
                     subcounter = 0
                     while len(regex.findall(r, q)) > 0:
                         subcounter += len(regex.findall(r, q))
@@ -205,22 +205,22 @@
                     replacements.append(['rlike -> regexp_like()', subcounter])
                     
                     # extract(part from str) -> extract(part from date)
-                    search = regex.findall(r'\\b(extract)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
+                    search = regex.findall(r'\\b(extract\\b)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
                     replacements.append(['cast inside of extract() to date', len(search)])
                     search_corrected = [s[2].split('from') for s in search]
-                    search_corrected = [' from '.join([search_el[0].strip(), 'date(' + search_el[1].strip() + ')']) for search_el in search_corrected]
+                    search_corrected = [' from '.join([search_el[0].strip(' '), 'date(' + search_el[1].strip(' ') + ')']) if 'date(' not in search_el[1] else ' from '.join([search_el[0], search_el[1]]) for search_el in search_corrected]
                     search_corrected = list(zip([s[2] for s in search], search_corrected))
                     for s in search_corrected:
                         q = q.replace(s[0], s[1])
                     
                     # named_struct -> row, only possible without realiasing the row (as we can't know the data types)
-                    search = regex.findall(r"(named_struct\\s*(\\(((?>[^()]++|(?2))*?)\\)))", q)
+                    search = regex.findall(r"(named_struct\\b\\s*(\\(((?>[^()]++|(?2))*?)\\)))", q)
                     if len(search) > 0:
                         nb_newlines = [len(re.findall(r'\\n', s[0])) for s in search]
                     # we use the ; trick in case there are functions inside the named_struct, i.e. replace with ; if surrounded by ()
                     search_corrected = [re.sub(r'\\(([\\s\\S]*?),([\\s\\S]*?)\\)', r'(\\1;\\2)', s[2]) for s in search]
                     names = [s.split(',')[::-2][::-1] for s in search_corrected]
-                    names = [[n.replace(';', ',').strip() for n in na] for na in names]
+                    names = [[n.replace(';', ',').strip(' ') for n in na] for na in names]
                     trad = ['row(' + ', '.join(n) + ')' for n in names]
                     trad = [t + '\\n'*nb_newlines[i] for i, t in enumerate(trad)]
                     for s, t in zip(search, trad):
@@ -242,13 +242,25 @@
                         replacements.append(['size() -> cardinality()', len(re.findall(r, q))])
                         q = re.sub(r, r'cardinality(', q)
                         
+                        # map_from_arrays(key, collect_list(value)) -> map_agg(key, value)
+                        search = regex.findall(r'\\b(map_from_arrays)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
+                        replacements.append(['map_from_arrays(key, collect_list(value)) -> map_agg(key, value)', len(search)])
+                        search2 = [regex.findall(r'\\b(collect_list|collect_set)\\s*(\\(((?>[^()]++|(?2))*)\\))*', s[2])[0] for s in search]
+                        search_corrected = []
+                        for s, s2 in zip(search, search2):
+                            sc = 'map_agg(' + ', '.join([s[2].split(',')[0].strip(' '), s2[2]]) + ')'
+                            search_corrected.append(sc)
+                        search_corrected = list(zip([s[0] + s[1] for s in search], search_corrected))
+                        for sc in search_corrected:
+                            q = q.replace(sc[0], sc[1])
+                        
                         # collect_list() -> array_agg()
                         r = r'\\bcollect_list\\s*\\('
                         replacements.append(['collect_list() -> array_agg()', len(re.findall(r, q))])
                         q = re.sub(r, r'array_agg(', q)
                         
                         # collect_set() -> array_agg(distinct)
-                        r_window = r'((collect_set)\\s*(\\((?>[^()]++|(?2))*\\))[\\S\\s]+?(over)\\s*(\\((?>[^()]++|(?2))*\\)))'
+                        r_window = r'((collect_set\\b)\\s*(\\((?>[^()]++|(?2))*\\))[\\S\\s]+?(over)\\s*(\\((?>[^()]++|(?2))*\\)))'
                         r_collect_set = r'\\bcollect_set\\s*\\('
                         # first translate the cases with window function
                         search = regex.findall(r_window, q)
@@ -267,55 +279,55 @@
                         # To cast the inside as date we need to split it, but splitting at ',' can be
                         # a problem if the expression includes another function. Actually, we need to
                         # split only if there is no '()' left of the comma -> I use a trick with ';'
-                        search = regex.findall(r"\\b(datediff)\\s*(\\(((?>[^()]++|(?2))*)\\))*", q)
+                        search = regex.findall(r"\\b(datediff\\b)\\s*(\\(((?>[^()]++|(?2))*)\\))*", q)
                         replacements.append(['datediff() -> date_diff() + add unit + cast inside as date', len(search)])
                         search_corrected = [re.sub(r'\\)\\s*,', r');', s[2]) for s in search]
                         search_corrected = [s.split(';') if ';' in s else s.split(',') for s in search_corrected]
-                        search_corrected = [', '.join(['date(' + s.strip() + ')' for s in search_el]) for search_el in search_corrected]
+                        search_corrected = [', '.join(['date(' + s.strip(' ') + ')' if 'date(' not in s else s.strip(' ') for s in search_el]) for search_el in search_corrected]
                         search_corrected = list(zip([s[2] for s in search], search_corrected))
                         for s in search_corrected:
                             q = q.replace(s[0], s[1])
-                        q = re.sub(r'\\b(datediff)\\s*\\(', r"date_diff('day', ", q)
+                        q = re.sub(r'\\b(datediff\\b)\\s*\\(', r"date_diff('day', ", q)
                         
                         # date_add(str, value) -> date_add('day', value, date)
-                        search = regex.findall(r"\\b(date_add)\\s*(\\(((?>[^()]++|(?2))*)\\))*", q)
+                        search = regex.findall(r"\\b(date_add\\b)\\s*(\\(((?>[^()]++|(?2))*)\\))*", q)
                         replacements.append(["date_add(str, value) -> date_add('day', value, date)", len(search)])
                         search_corrected = [re.sub(r'\\)\\s*,', r');', s[2]) for s in search]
                         search_corrected = [s.split(';') if ';' in s else s.split(',') for s in search_corrected]
-                        search_corrected = [', '.join(["'day'", search_el[1].strip(), 'date(' + search_el[0].strip() + ')']) for search_el in search_corrected]
+                        search_corrected = [', '.join(["'day'", search_el[1].strip(' '), 'date(' + search_el[0].strip(' ') + ')']) if 'date(' not in search_el[0] else ', '.join(["'day'", search_el[1].strip(' '), search_el[0].strip(' ')]) for search_el in search_corrected]
                         search_corrected = list(zip([s[2] for s in search], search_corrected))
                         for s in search_corrected:
                             q = q.replace(s[0], s[1])
 
                         # date_sub(str, value) -> date_add('day', -value, date)
-                        search = regex.findall(r'\\b(date_sub)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
+                        search = regex.findall(r'\\b(date_sub\\b)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
                         replacements.append(["date_sub(str, value) -> date_add('day', -value, date)", len(search)])
                         search_corrected = [re.sub(r'\\)\\s*,', r');', s[2]) for s in search]
                         search_corrected = [s.split(';') if ';' in s else s.split(',') for s in search_corrected]
-                        search_corrected = [', '.join(["'day'", '-' + search_el[1].strip(), 'date(' + search_el[0].strip() + ')']) for search_el in search_corrected]
+                        search_corrected = [', '.join(["'day'", '-' + search_el[1].strip(' '), 'date(' + search_el[0].strip(' ') + ')']) if 'date(' not in search_el[0] else ', '.join(["'day'", '-' + search_el[1].strip(' '), search_el[0].strip(' ')]) for search_el in search_corrected]
                         search_corrected = list(zip([s[2] for s in search], search_corrected))
                         for s in search_corrected:
                             q = q.replace(s[0], s[1])
                         q = re.sub(r'\\bdate_sub\\s*\\(', r'date_add(', q)
                         
                         # trunc(str, pattern) -> date_format(date, pattern) + warning about different patterns
-                        search = regex.findall(r'\\b(trunc)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
+                        search = regex.findall(r'\\b(trunc\\b)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
                         replacements.append(['trunc(str, pattern) -> date_format(date, pattern)', len(search)])
                         if len(search) > 0:
                             print('Warning: There can be different date string patterns in Presto vs. Hive QL (patterns not translated here).')
                         search_corrected = [re.sub(r'\\)\\s*,', r');', s[2]) for s in search]
                         search_corrected = [s.split(';') if ';' in s else s.split(',') for s in search_corrected]
-                        search_corrected = [', '.join(['date(' + search_el[0].strip() + ')', search_el[1].strip()]) for search_el in search_corrected]
+                        search_corrected = [', '.join(['date(' + search_el[0].strip(' ') + ')', search_el[1].strip(' ')]) if 'date(' not in search_el[0] else ', '.join([search_el[0].strip(' '), search_el[1].strip(' ')]) for search_el in search_corrected]
                         search_corrected = list(zip([s[2] for s in search], search_corrected))
                         for s in search_corrected:
                             q = q.replace(s[0], s[1])
                         q = regex.sub(r'\\btrunc\\s*\\(', r'date_format(', q)
-
+                        
                         # percentile_approx() -> approx_percentile()
                         r = r'\\bpercentile_approx\\s*\\('
                         replacements.append(['percentile_approx() -> approx_percentile()', len(re.findall(r, q))])
                         q = re.sub(r, r'approx_percentile(', q)
-                        
+
                     # Last, hive specific & vertica specific
                     if dest == 'vertica':
                         
@@ -328,6 +340,18 @@
                         r = r'\\bsize\\s*\\('
                         replacements.append(['size() -> array_length()', len(re.findall(r, q))])
                         q = re.sub(r, r'array_length(', q)
+                        
+                        # map_from_arrays(key, collect_list(value)) -> mapaggregate(key, value)
+                        search = regex.findall(r'\\b(map_from_arrays)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
+                        replacements.append(['map_from_arrays(key, collect_list(value)) -> mapaggregate(key, value)', len(search)])
+                        search2 = [regex.findall(r'\\b(collect_list|collect_set)\\s*(\\(((?>[^()]++|(?2))*)\\))*', s[2])[0] for s in search]
+                        search_corrected = []
+                        for s, s2 in zip(search, search2):
+                            sc = 'mapaggregate(' + ', '.join([s[2].split(',')[0].strip(' '), s2[2]]) + ')'
+                            search_corrected.append(sc)
+                        search_corrected = list(zip([s[0] + s[1] for s in search], search_corrected))
+                        for sc in search_corrected:
+                            q = q.replace(sc[0], sc[1])
                         
                         # collect_list() -> listagg()
                         # could use STRING_TO_ARRAY('['||col||']', ',' USING PARAMETERS max_length=1000000) to return an array type
@@ -346,40 +370,40 @@
                         replacements.append(['datediff -> timestampdiff + add unit + cast inside and output as date', len(search)])
                         search_corrected = [re.sub(r'\\)\\s*,', r');', s[2]) for s in search]
                         search_corrected = [s.split(';') if ';' in s else s.split(',') for s in search_corrected]
-                        search_corrected = [', '.join(['date(' + s.strip() + ')' for s in search_el]) for search_el in search_corrected]
+                        search_corrected = [', '.join(['date(' + s.strip(' ') + ')' if 'date(' not in s else s.strip(' ') for s in search_el]) for search_el in search_corrected]
                         search_corrected = list(zip([s[2] for s in search], search_corrected))
                         for s in search_corrected:
                             q = q.replace(s[0], s[1])
                         q = re.sub(r'\\bdatediff\\s*\\(', r"timestampdiff('day', ", q)
 
                         # date_add(str, value) -> date(timestampadd('day', value, date))
-                        search = regex.findall(r'\\b(date_add)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
+                        search = regex.findall(r'\\b(date_add\\b)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
                         replacements.append(["date_add(str, value) -> date(timestampadd('day', value, date))", len(search)])
                         search_corrected = [re.sub(r'\\)\\s*,', r');', s[2]) for s in search]
                         search_corrected = [s.split(';') if ';' in s else s.split(',') for s in search_corrected]
-                        search_corrected = [', '.join(["'day'", search_el[1].strip(), 'date(' + search_el[0].strip() + ')']) for search_el in search_corrected]
+                        search_corrected = [', '.join(["'day'", search_el[1].strip(' '), 'date(' + search_el[0].strip(' ') + ')']) if 'date(' not in search_el[0] else ', '.join(["'day'", search_el[1].strip(' '), search_el[0].strip(' ')]) for search_el in search_corrected]
                         search_corrected = list(zip([s[2] for s in search], search_corrected))
                         for s in search_corrected:
                             q = q.replace(s[0], s[1])
-                        q = regex.sub(r'\\b(date_add)\\s*(\\(((?>[^()]++|(?2))*)\\))*', r'date(timestampadd\\2)', q)
+                        q = regex.sub(r'\\b(date_add\\b)\\s*(\\(((?>[^()]++|(?2))*)\\))*', r'date(timestampadd\\2)', q)
 
                         # date_sub(str, value) -> date(timestampadd('day', -value, date))
-                        search = regex.findall(r'\\b(date_sub)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
+                        search = regex.findall(r'\\b(date_sub\\b)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
                         replacements.append(["date_sub(str, value) -> date(timestampadd('day', -value, date))", len(search)])
                         search_corrected = [re.sub(r'\\)\\s*,', r');', s[2]) for s in search]
                         search_corrected = [s.split(';') if ';' in s else s.split(',') for s in search_corrected]
-                        search_corrected = [', '.join(["'day'", '-' + search_el[1].strip(), 'date(' + search_el[0].strip() + ')']) for search_el in search_corrected]
+                        search_corrected = [', '.join(["'day'", '-' + search_el[1].strip(' '), 'date(' + search_el[0].strip(' ') + ')']) if 'date(' not in search_el[0] else ', '.join(["'day'", '-' + search_el[1].strip(' '), search_el[0].strip(' ')]) for search_el in search_corrected]
                         search_corrected = list(zip([s[2] for s in search], search_corrected))
                         for s in search_corrected:
                             q = q.replace(s[0], s[1])
-                        q = regex.sub(r'\\b(date_sub)\\s*(\\(((?>[^()]++|(?2))*)\\))*', r'date(timestampadd\\2)', q)
-
-                        # percentile_approx() -> approximate_percentile() (hive -> vertica)
-                        r = r'\\b(percentile_approx\\s*)(\\(((?>[^()]++|(?2))*)\\))*'
+                        q = regex.sub(r'\\b(date_sub\\b)\\s*(\\(((?>[^()]++|(?2))*)\\))*', r'date(timestampadd\\2)', q)
+                        
+                        # percentile_approx() -> approximate_percentile()
+                        r = r'\\b(percentile_approx\\b\\s*)(\\(((?>[^()]++|(?2))*)\\))*'
                         search = regex.findall(r, q)
                         search_corrected = [re.sub(r'\\(([\\s\\S]*?),([\\s\\S]*?)\\)', r'(\\1;\\2)', s[2]) for s in search]
-                        expr = [s.split(',')[0].strip().replace(';', ',') for s in search_corrected]
-                        perc = [s.split(',')[1].strip() for s in search_corrected]
+                        expr = [s.split(',')[0].strip(' ').replace(';', ',') for s in search_corrected]
+                        perc = [s.split(',')[1].strip(' ') for s in search_corrected]
                         trad = [f'approximate_percentile({e} using parameters percentile={p})' for e, p in zip(expr, perc)]
                         for s, t in zip(search, trad):
                             q = q.replace(s[0]+s[1], t)
@@ -397,6 +421,11 @@
                     # if needed, just signal that presto interval returns a date, not a timestamp
                     if 'interval' in q:
                         warnings.append("Warning: Note that in Presto, INTERVAL returns a date, while in Hive and Vertica it returns a full timestamp (shouldn't be an issue).")
+                    
+                    # contains -> array_contains
+                    r = r'\\bcontains\\s*\\('
+                    replacements.append(['contains() -> array_contains()', len(re.findall(r, q))])
+                    q = re.sub(r, r'array_contains(', q)
                     
                     # Then, presto specific & vertica specific
                     if dest == 'vertica':
@@ -439,21 +468,26 @@
                         q = re.sub(r, r'datediff(', q)
                         
                         # date_add() -> date(timestampadd())
-                        r = r'(\\bdate_add\\s*)\\s*(\\(((?>[^()]++|(?2))*)\\))*'
+                        r = r'(\\bdate_add\\b\\s*)\\s*(\\(((?>[^()]++|(?2))*)\\))*'
                         replacements.append(['date_add() -> date(timestampadd())', len(regex.findall(r, q))])
                         q = regex.sub(r, r'date(timestampadd\\2)', q)
-
+                        
                         # approx_percentile() -> approximate_percentile()
-                        r = r'\\b(approx_percentile\\s*)(\\(((?>[^()]++|(?2))*)\\))*'
+                        r = r'\\b(approx_percentile\\b\\s*)(\\(((?>[^()]++|(?2))*)\\))*'
                         search = regex.findall(r, q)
                         search_corrected = [re.sub(r'\\(([\\s\\S]*?),([\\s\\S]*?)\\)', r'(\\1;\\2)', s[2]) for s in search]
-                        expr = [s.split(',')[0].strip().replace(';', ',') for s in search_corrected]
-                        perc = [s.split(',')[1].strip() for s in search_corrected]
+                        expr = [s.split(',')[0].strip(' ').replace(';', ',') for s in search_corrected]
+                        perc = [s.split(',')[1].strip(' ') for s in search_corrected]
                         trad = [f'approximate_percentile({e} using parameters percentile={p})' for e, p in zip(expr, perc)]
                         for s, t in zip(search, trad):
                             q = q.replace(s[0]+s[1], t)
                         replacements.append(['approx_percentile() -> approximate_percentile()', len(search)])
                         
+                        # map_agg() -> mapaggregate()
+                        r = r'\\bmap_agg\\s*\\('
+                        replacements.append(['map_agg() -> mapaggregate()', len(re.findall(r, q))])
+                        q = re.sub(r, r'mapaggregate(', q)
+
                     # Last, presto specific & hive specific
                     if dest == 'hive':
                         
@@ -478,7 +512,7 @@
                         r = r'\\barray_agg\\s*\\('
                         replacements.append(['array_agg() -> collect_list()', len(re.findall(r, q))])
                         q = re.sub(r, r'collect_list(', q)
-
+                        
                         # approx_percentile() -> percentile_approx()
                         r = r'\\bapprox_percentile\\s*\\('
                         replacements.append(['approx_percentile() -> percentile_approx()', len(re.findall(r, q))])
@@ -569,7 +603,7 @@
                         q = re.sub(r, r'array_average(', q)
                         
                         # concat() -> array_join()
-                        r = r"(concat)\\s*(\\(((?>[^()]++|(?2))*)\\))"
+                        r = r"(concat\\b)\\s*(\\(((?>[^()]++|(?2))*)\\))"
                         subcounter = 0
                         while len(regex.findall(r, q)) > 0:
                             subcounter += len(regex.findall(r, q))
@@ -580,7 +614,7 @@
                         # more complex than expected
                         
                         # datediff() or timestampdiff() -> date_diff()
-                        r = r'\\b(datediff|timestampdiff)\\s*\\('
+                        r = r'\\b(datediff\\b|timestampdiff\\b)\\s*\\('
                         replacements.append(['datediff() or timestampdiff() -> date_diff()', len(re.findall(r, q))])
                         q = re.sub(r, r'date_diff(', q)
                         
@@ -590,7 +624,7 @@
                         q = re.sub(r, r'date_add(', q)
 
                         # timestamp_trunc() or trunc() -> date_format()
-                        r = r'\\b(timestamp_trunc|trunc)\\s*\\('
+                        r = r'\\b(timestamp_trunc\\b|trunc\\b)\\s*\\('
                         replacements.append(['timestamp_trunc() or trunc() -> date_format()', len(re.findall(r, q))])
                         q = re.sub(r, r'date_format(', q)
                         if len(re.findall(r, q)) > 0:
@@ -600,11 +634,16 @@
                         r = r'\\bdate_part\\s*\\('
                         replacements.append(['date_part() -> date_trunc()', len(re.findall(r, q))])
                         q = re.sub(r, r'date_trunc(', q)
-
+                        
                         # approximate_percentile() -> approx_percentile()
                         r = r'approximate_percentile\\s*\\(([\\S\\s]+?)using\\s*parameters\\s*percentile=(0\\.\\d+)'
                         replacements.append(['approximate_percentile() -> approx_percentile()', len(re.findall(r, q))])
                         q = re.sub(r, r'approx_percentile(\\1, \\2', q)
+                        
+                        # mapaggregate() -> map_agg()
+                        r = r'\\bmapaggregate\\s*\\('
+                        replacements.append(['mapaggregate() -> map_agg()', len(re.findall(r, q))])
+                        q = re.sub(r, r'map_agg(', q)
                         
                     # Then, vertica specific & hive specific
                     if dest == 'hive':
@@ -630,12 +669,12 @@
                         r = r'\\btimestamp_trunc\\s*\\('
                         replacements.append(['timestamp_trunc() -> trunc()', len(re.findall(r, q))])
                         q = re.sub(r, r'trunc(', q)
-
+                        
                         # approximate_percentile() -> percentile_approx()
                         r = r'approximate_percentile\\s*\\(([\\S\\s]+?)using\\s*parameters\\s*percentile=(0\\.\\d+)'
                         replacements.append(['approximate_percentile() -> percentile_approx()', len(re.findall(r, q))])
                         q = re.sub(r, r'percentile_approx(\\1, \\2', q)
-
+                        
                         
                 # 2. To specific languages
                 
@@ -645,6 +684,7 @@
                     # index (this one was hard, it finds back the columns corresponding to the references in group by or order by)
                     
                     try:
+                        print(q)
                         # First, get the column expressions
                         # We want to get the list of column references only if there is a group by afterwards
                         #columns_original = re.findall(r'(?<=\\bselect\\b)([\\S\\s]+?)(?=\\bfrom\\b)', q)
@@ -688,9 +728,9 @@
                         orderby_split = [[re.sub(r';', r',', col) for col in cols] for cols in orderby_split]
 
                         # Remove the column references that have been commented out
-                        columns_split = [[t for t in cols if not (t.strip().startswith('/*') or t.strip().endswith('*/'))] for cols in columns_split]
-                        orderby_split = [[t for t in cols if not (t.strip().startswith('/*') or t.strip().endswith('*/'))] for cols in orderby_split]
-                        groupby_split = [[t for t in cols if not (t.strip().startswith('/*') or t.strip().endswith('*/'))] for cols in groupby_split]
+                        columns_split = [[t for t in cols if not (t.strip(' ').startswith('/*') or t.strip().endswith('*/'))] for cols in columns_split]
+                        orderby_split = [[t for t in cols if not (t.strip(' ').startswith('/*') or t.strip().endswith('*/'))] for cols in orderby_split]
+                        groupby_split = [[t for t in cols if not (t.strip(' ').startswith('/*') or t.strip().endswith('*/'))] for cols in groupby_split]
 
                         # Then, replace the column references by the column expression
                         orderby_modified = []
@@ -720,7 +760,7 @@
                                     groupby_subcounter += 1
                                 else:
                                     cols_modified.append(col)
-                            groupby_modified.append(','.join(cols_modified))
+                            groupby_modified.append(', '.join(cols_modified))
 
                         # Finally, replace in original string
                         for i in range(len(groupby_original)):
@@ -814,7 +854,7 @@
                     q = re.sub(r, r'\`', q)
                     
                     # array[] -> array()        
-                    r = r"(\\barray)\\s*(\\[([\\S\\s]*?)\\])"
+                    r = r"(\\barray\\b)\\s*(\\[([\\S\\s]*?)\\])"
                     subcounter = 0
                     while len(re.findall(r, q)) > 0:
                         subcounter += len(re.findall(r, q))
@@ -834,10 +874,10 @@
                         warnings.append('Warning: In Hive, you can only add or remove days (no other units).')
                     # look for the inside of the brackets (2nd element) and remove the first element (the unit)
                     # also keep the original and use this tuple (old, new) to run a replacement
-                    search = [(s[1], '(' + ','.join(s[1].split(',')[1:]).strip()) for s in search]
+                    search = [(s[1], '(' + ','.join(s[1].split(',')[1:]).strip(' ')) for s in search]
                     for s in search:
                         q = q.replace(s[0], s[1])
-                    q = re.sub(r'\\b(datediff|date_diff|timestampdiff)\\s*\\(', r'-datediff(', q)
+                    q = re.sub(r'\\b(datediff\\b|date_diff\\b|timestampdiff\\b)\\s*\\(', r'-datediff(', q)
                     
                     # timestampadd or date_add(unit_str, value, date) -> date_add(date, value)
                     search = re.findall(r"(\\bdate_add\\s*\\('\\w+',\\s*|timestampadd\\s*\\('\\w+',\\s*)", q)
@@ -845,17 +885,17 @@
                     # display warning if necessary (i.e. if other units than 'day' are used)
                     if len(search) > 0:
                         for s in search:
-                            s2 = re.findall(r"(\\b(date_add|timestampadd)\\s*\\()'day',\\s*", s)
+                            s2 = re.findall(r"(\\b(date_add\\b|timestampadd\\b)\\s*\\()'day',\\s*", s)
                             if len(s2) == 0:
                                 warnings.append('Warning: In Hive, you can only add or remove days (no other units).')
                                 break
                     # start by removing the unit
-                    q = re.sub(r"(\\b(date_add|timestampadd)\\s*\\()'\\w+',\\s*", r'\\1', q)
+                    q = re.sub(r"(\\b(date_add\\b|timestampadd\\b)\\s*\\()'\\w+',\\s*", r'\\1', q)
                     # then split elements and invert them
-                    search = regex.findall(r"\\b(date_add|timestampadd)\\s*(\\(((?>[^()]++|(?2))*)\\))*", q)
+                    search = regex.findall(r"\\b(date_add\\b|timestampadd\\b)\\s*(\\(((?>[^()]++|(?2))*)\\))*", q)
                     search_corrected = [re.sub(r'\\)\\s*,', r');', s[2]) for s in search]
                     search_corrected = [s.split(';') if ';' in s else s.split(',') for s in search_corrected]
-                    search_corrected = [', '.join([search_el[1].strip(), search_el[0].strip()]) for search_el in search_corrected]
+                    search_corrected = [', '.join([search_el[1].strip(' '), search_el[0].strip(' ')]) for search_el in search_corrected]
                     search_corrected = list(zip([s[2] for s in search], search_corrected))
                     for s in search_corrected:
                         q = q.replace(s[0], s[1])
@@ -863,23 +903,23 @@
                     q = re.sub(r'\\btimestampadd\\s*\\(', r'date_add(', q)
                     
                     # date_part or date_trunc(part, date) -> extract(part from date) (or trunc(date, 'PART'))
-                    search = regex.findall(r'\\b(date_part|date_trunc)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
+                    search = regex.findall(r'\\b(date_part\\b|date_trunc\\b)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
                     replacements.append(['date_part or date_trunc(part, date) -> extract(part from date)', len(search)])
                     search_corrected = [s[2].split(',') for s in search]
                     search_corrected = [[search_el[0], ','.join(search_el[1:])] for search_el in search_corrected]
-                    search_corrected = [' from '.join([search_el[0].strip(), search_el[1].strip()]) for search_el in search_corrected]
+                    search_corrected = [' from '.join([search_el[0].strip(' '), search_el[1].strip(' ')]) for search_el in search_corrected]
                     search_corrected = list(zip([s[2] for s in search], search_corrected))
                     for s in search_corrected:
                         q = q.replace(s[0], s[1])
-                    q = re.sub(r'\\b(date_part|date_trunc)\\s*\\(', r'extract(', q)
+                    q = re.sub(r'\\b(date_part\\b|date_trunc\\b)\\s*\\(', r'extract(', q)
                     
                     # row with realiasing -> named_struct
                     search = regex.findall(r'(cast\\s*\\(\\s*row\\s*(\\(((?>[^()]++|(?2))*?)\\))\\s*as\\s+row\\s*\\(((?>[^()]++|(?2))*?)\\)\\s*\\))', q)
                     if len(search) > 0:
                         nb_newlines = [len(re.findall(r'\\n', s[0])) for s in search]
                     names_corrected = [re.sub(r'\\(([\\s\\S]*?),([\\s\\S]*?)\\)', r'(\\1;\\2)', s[2]).split(',') for s in search]
-                    names = [[n.replace(';', ',').strip() for n in na] for na in names_corrected]
-                    alias = [[a.strip().split(' ')[0] for a in s[3].split(',')] for s in search]
+                    names = [[n.replace(';', ',').strip(' ') for n in na] for na in names_corrected]
+                    alias = [[a.strip(' ').split(' ')[0] for a in s[3].split(',')] for s in search]
                     trad = ['named_struct(' + ', '.join([f"'{a}', {n}" for a, n in zip(al, na)]) + ')' for al, na in zip(alias, names)]
                     trad = [t + '\\n'*nb_newlines[i] for i, t in enumerate(trad)]
                     for s, t in zip(search, trad):
@@ -887,17 +927,28 @@
                     replacements.append(['row() with realiasing -> named_struct()', len(search)])
 
                     # row without realiasing -> named_struct
-                    search = regex.findall(r'(row\\s*(\\(((?>[^()]++|(?2))*?)\\)))', q)
+                    search = regex.findall(r'(row\\b\\s*(\\(((?>[^()]++|(?2))*?)\\)))', q)
                     if len(search) > 0:
                         nb_newlines = [len(re.findall(r'\\n', s[0])) for s in search]
                     names_corrected = [re.sub(r'\\(([\\s\\S]*?),([\\s\\S]*?)\\)', r'(\\1;\\2)', s[2]).split(',') for s in search]
-                    names = [[n.replace(';', ',').strip() for n in na] for na in names_corrected]
+                    names = [[n.replace(';', ',').strip(' ') for n in na] for na in names_corrected]
                     trad = ['named_struct(' + ', '.join([f"'{name}', {name}" for name in t]) + ')' for t in names]
                     trad = [t + '\\n'*nb_newlines[i] for i, t in enumerate(trad)]
                     for s, t in zip(search, trad):
                         q = q.replace(s[0], t)
                     replacements.append(['row() without realiasing -> named_struct()', len(search)])
                     
+                    # mapaggregate(key, value) or map_agg(key, value) -> map_from_arrays(key, collect_list(value))
+                    search = regex.findall(r'\\b(map_agg|mapaggregate)\\s*(\\(((?>[^()]++|(?2))*)\\))*', q)
+                    replacements.append(['mapaggregate/map_agg(key, value) -> map_from_arrays(key, collect_list(value))', len(search)])
+                    search_corrected = []
+                    for s in search:
+                        sc = 'map_from_arrays(' + s[2].split(',')[0].strip(' ') + ', collect_list(' + ','.join(s[2].split(',')[1:]).strip(' ') + '))'
+                        search_corrected.append(sc)
+                    search_corrected = list(zip([s[0] + s[1] for s in search], search_corrected))
+                    for sc in search_corrected:
+                        q = q.replace(sc[0], sc[1])
+                            
                 # hive / vertica common & presto specific
                 if dest == 'presto':
                     
@@ -916,6 +967,11 @@
                     r = r'''(=)([\\S\\s]+\\binterval\\b[\\s'"\\d]+[\\w]+)'''
                     replacements.append(['add date() when interval is used', len(re.findall(r, q))])
                     q = re.sub(r, r'= date(\\2)', q)
+                    
+                    # array_contains() -> contains()
+                    r = r'\\barray_contains\\s*\\('
+                    replacements.append(['array_contains() -> contains()', len(re.findall(r, q))])
+                    q = re.sub(r, r'contains(', q)
                     
                 # hive / presto common & vertica specific
                 if dest == 'vertica':
@@ -936,7 +992,7 @@
                     replacements.append(['if -> case when', len(searched)])
                     
                     # date_format() -> to_char() + cast as date + warning about pattern letters differences
-                    r = r'(\\bdate_format\\s*)\\s*(\\(((?>[^()]++|(?2))*)\\))*'
+                    r = r'(\\bdate_format\\b\\s*)\\s*(\\(((?>[^()]++|(?2))*)\\))*'
                     if len(regex.findall(r, q)) > 0:
                         warnings.append('Warning: Make sure you use the correct date patterns for your target language.')
                     replacements.append(['date_format() -> to_char() + cast as date', len(regex.findall(r, q))])
@@ -944,13 +1000,16 @@
                 
                 # 3. Final results
                 
-                # Put back capital letters
-                r = r'''(\\b\\w+\\s*\\(|\\b(select|from|where|group by|order by|union|all|intersect|interval|left|right|inner|join|cross|unnest|lateral|view|explode|between|in|as|or|and|with|set|having|limit|outer|like|ilike|rlike|is|not|null|partition|by|over|on|case|when|then|else|end|preceding|following|date|timestamp|varchar|double|int|integer|string|bool|boolean|bigint|smallint|tinyint|float|insert|desc|asc|distinct|using|parameters)\\b)'''
+                # Format a few things:
+                # Put capital letters to functions and SQL commands
+                r = r'''(\\b\\w+\\s*\\(|(?<!\\.)\\b(select|from|where|group by|order by|union|all|intersect|interval|left|right|inner|join|cross|unnest|lateral|view|explode|between|in|as|or|and|with|set|having|limit|outer|like|ilike|rlike|is|not|null|partition|by|over|on|case|when|then|else|end|preceding|following|date|timestamp|varchar|double|int|integer|string|bool|boolean|bigint|smallint|tinyint|float|insert|desc|asc|distinct|using|parameters|create table|drop table|if exists|ordinality)\\b)'''
                 q = re.sub(r, lambda m: f"{m.group(1).upper()}", q)
-                
-                # Format a few things
+                # Add spaces after commas 
                 r = r',[ ]*'
                 q = re.sub(r, r', ', q)
+                # Remove spaces before closing parentheses
+                r = r'([^\\s])[ ]\\)'
+                q = re.sub(r, r'\\1)', q)
                 
                 # Replace back inline comments, at the correct position
                 def replace_nth(s, old, new, n):
